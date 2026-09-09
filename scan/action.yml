@@ -1,0 +1,138 @@
+name: 'Wiz Image Scan'
+description: 'Scan a container image with the Wiz CLI. The image must already be in the runner local image store, because the Wiz CLI never pulls it. Run this step before you push the image.'
+author: 'Hugging Face'
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  image:
+    description: 'Image reference to scan, with its tag or digest. It must exist in the local image store, or be the path to a .tar, .tar.gz or .tgz file.'
+    required: true
+  clientId:
+    description: 'Client ID of the Wiz service account.'
+    required: true
+  clientSecret:
+    description: 'Client secret of the Wiz service account.'
+    required: true
+  policies:
+    description: 'Wiz policy names to apply, separated by commas. Leave this empty to apply the policies that your Wiz tenant applies by default.'
+    required: false
+    default: ''
+  dockerfile:
+    description: 'Path to the Dockerfile that built the image. Wiz keeps it as scan metadata and uses it to correlate the image with its source code.'
+    required: false
+    default: ''
+  enforcement:
+    description: 'What to do if the image fails a Wiz policy. Set "policy" to use the exit code of the Wiz CLI, which lets your Wiz policy decide. Set "audit" to print a warning and continue.'
+    required: false
+    default: 'policy'
+  reportPath:
+    description: 'File to write the JSON scan report to. The default is a file in the runner temporary directory, which is outside the workspace.'
+    required: false
+    default: ''
+  projects:
+    description: 'Wiz project IDs or slugs to scope the scan to, separated by commas. Leave this empty to use the projects of the service account.'
+    required: false
+    default: ''
+
+outputs:
+  image:
+    description: 'The image reference that was scanned. Pass it to the register action, which finds the scan by this exact value.'
+    value: ${{ inputs.image }}
+  verdict:
+    description: 'The result of the scan. It is "passed" if the image satisfied every applied policy, or "failed" if a policy blocked the image.'
+    value: ${{ steps.scan.outputs.verdict }}
+  report:
+    description: 'Path to the JSON scan report.'
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    # Checked before the install, so a typo fails in a second instead of after a large
+    # download. Composite actions cannot declare an enum, so this has to be a runtime test.
+    - name: Check the enforcement value
+      shell: bash
+      env:
+        ENFORCEMENT: ${{ inputs.enforcement }}
+      run: |
+        set -euo pipefail
+        if [ "$ENFORCEMENT" != "policy" ] && [ "$ENFORCEMENT" != "audit" ]; then
+          echo "::error title=Wiz scan::enforcement must be \"policy\" or \"audit\", not \"${ENFORCEMENT}\"."
+          exit 1
+        fi
+
+    # Shared with the register action. GITHUB_ACTION_PATH points at this action's own
+    # subdirectory, and the runner unpacks the whole repository, so `../` reaches the root.
+    - name: Install the Wiz CLI
+      shell: bash
+      run: "${GITHUB_ACTION_PATH}/../install.sh"
+
+    # Exit code 4 means the image hit a policy whose CLI enforcement is BLOCK. That
+    # enforcement is a setting on the policy in Wiz, so "policy" keeps the decision on the
+    # Wiz side. Every other non-zero code is a failure of the CLI itself and always fails
+    # the step.
+    - name: Scan the image
+      id: scan
+      shell: bash
+      env:
+        WIZ_CLIENT_ID: ${{ inputs.clientId }}
+        WIZ_CLIENT_SECRET: ${{ inputs.clientSecret }}
+        IMAGE: ${{ inputs.image }}
+        POLICIES: ${{ inputs.policies }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        ENFORCEMENT: ${{ inputs.enforcement }}
+        REPORT_PATH: ${{ inputs.reportPath }}
+        PROJECTS: ${{ inputs.projects }}
+      run: |
+        set -euo pipefail
+
+        cli="${RUNNER_TEMP}/wiz-image-action/wizcli"
+        report="${REPORT_PATH:-${RUNNER_TEMP}/wiz-image-action/scan.json}"
+        mkdir -p "$(dirname "$report")"
+
+        args=(scan container-image "$IMAGE" --no-color --no-style --json-output-file "$report")
+        if [ -n "$POLICIES" ]; then
+          args+=(--policies "$POLICIES")
+        fi
+        if [ -n "$DOCKERFILE" ]; then
+          args+=(--dockerfile "$DOCKERFILE")
+        fi
+        if [ -n "$PROJECTS" ]; then
+          args+=(--projects "$PROJECTS")
+        fi
+
+        code=0
+        "$cli" "${args[@]}" || code=$?
+
+        fail=0
+        case "$code" in
+          0)
+            verdict=passed
+            echo "::notice title=Wiz scan::${IMAGE} passed every applied policy."
+            ;;
+          4)
+            verdict=failed
+            if [ "$ENFORCEMENT" = "audit" ]; then
+              echo "::warning title=Wiz scan::${IMAGE} failed a Wiz policy. The step continues because enforcement is set to audit."
+            else
+              echo "::error title=Wiz scan::${IMAGE} failed a Wiz policy."
+              fail=4
+            fi
+            ;;
+          *)
+            echo "::error title=Wiz scan::The Wiz CLI stopped with exit code ${code}."
+            exit "$code"
+            ;;
+        esac
+
+        # The outputs are written before the exit, so a blocked image still gives the
+        # caller its verdict and its report.
+        {
+          echo "verdict=${verdict}"
+          echo "report=${report}"
+        } >> "$GITHUB_OUTPUT"
+
+        exit "$fail"

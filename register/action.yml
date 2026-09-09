@@ -1,0 +1,95 @@
+name: 'Wiz Image Register'
+description: 'Bind a Wiz CLI scan to the digest that the registry now holds, which adds the image to the Wiz trusted image database. Run this step after you push the image, in the same job as the scan.'
+author: 'Hugging Face'
+
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  image:
+    description: 'Image reference to register. Give the same value that you gave to the scan action, because the Wiz CLI finds the scan by this reference. The scan action publishes it as its "image" output.'
+    required: true
+  digest:
+    description: 'Digest of the image in the registry, for example the "digest" output of docker/build-push-action. Give this value whenever the local image has no digest of its own, which is the case for an image that buildx pushed and for an image loaded from a .tar file.'
+    required: false
+    default: ''
+  clientId:
+    description: 'Client ID of the Wiz service account.'
+    required: true
+  clientSecret:
+    description: 'Client secret of the Wiz service account.'
+    required: true
+  projects:
+    description: 'Wiz project IDs or slugs to scope the registration to, separated by commas. Leave this empty to use the projects of the service account.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # The same script the scan action runs, so this reuses the binary it downloaded.
+    - name: Install the Wiz CLI
+      shell: bash
+      run: "${GITHUB_ACTION_PATH}/../install.sh"
+
+    # Without a digest there is nothing to register, and the symptom of getting this wrong
+    # appears much later, as an admission verdict on a cluster. So it fails here instead.
+    - name: Check that a digest is available
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+      run: |
+        set -euo pipefail
+
+        if [ -n "$DIGEST" ]; then
+          exit 0
+        fi
+
+        advice='set the digest input to the "digest" output of your push step'
+
+        case "$IMAGE" in
+          *.tar | *.tar.gz | *.tgz)
+            echo "::error title=Wiz register::An exported image carries no digest, so ${IMAGE} needs one. Please ${advice}."
+            exit 1
+            ;;
+        esac
+
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "::warning title=Wiz register::docker is not available, so the digest of ${IMAGE} could not be checked. If the registration fails, ${advice}."
+          exit 0
+        fi
+
+        count=$(docker image inspect --format '{{len .RepoDigests}}' "$IMAGE" 2>/dev/null || echo 0)
+        if [ "$count" = "0" ]; then
+          echo "::error title=Wiz register::The local image ${IMAGE} has no digest of its own, which is normal for an image that buildx pushed. Please ${advice}."
+          exit 1
+        fi
+
+    # The Wiz CLI reads the scan from state on this runner, keyed on the image reference.
+    # That is why this step belongs in the same job as the scan and cannot be a separate
+    # job or a reusable workflow.
+    - name: Register the digest
+      shell: bash
+      env:
+        WIZ_CLIENT_ID: ${{ inputs.clientId }}
+        WIZ_CLIENT_SECRET: ${{ inputs.clientSecret }}
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+        PROJECTS: ${{ inputs.projects }}
+      run: |
+        set -euo pipefail
+
+        cli="${RUNNER_TEMP}/wiz-image-action/wizcli"
+
+        args=(tag "$IMAGE" --no-color --no-style)
+        if [ -n "$DIGEST" ]; then
+          args+=(--digest "$DIGEST")
+        fi
+        if [ -n "$PROJECTS" ]; then
+          args+=(--projects "$PROJECTS")
+        fi
+
+        "$cli" "${args[@]}"
+        echo "::notice title=Wiz register::${IMAGE} is registered in the Wiz trusted image database."
