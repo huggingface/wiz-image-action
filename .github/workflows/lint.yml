@@ -3,10 +3,10 @@ name: Lint
 # These actions are shell inside YAML, and a public action has no other safety net here.
 on:
   pull_request:
-    paths: ['.github/workflows/**', '*/action.yml']
+    paths: ['.github/workflows/**', '*/action.yml', 'install.sh']
   push:
     branches: [main]
-    paths: ['.github/workflows/**', '*/action.yml']
+    paths: ['.github/workflows/**', '*/action.yml', 'install.sh']
 
 permissions:
   contents: read
@@ -27,7 +27,9 @@ jobs:
           curl -sSfL --retry 3 --retry-all-errors \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar xz actionlint
-          ./actionlint -color
+          # -verbose lists the files it checked, so a silent pass cannot be mistaken
+          # for having checked nothing.
+          ./actionlint -color -verbose
 
       # actionlint reads workflows only, so the shell in the two composite actions needs its
       # own pass. Extract each `run:` block and give it to shellcheck.
@@ -52,5 +54,5 @@ jobs:
                   print(f"wrote {name} for step {step.get('name', index)!r}")
           PY
 
-          shellcheck --shell=bash --severity=warning "${RUNNER_TEMP}"/steps/*.sh
-          echo "Every composite step passed shellcheck."
+          shellcheck --shell=bash --severity=warning install.sh "${RUNNER_TEMP}"/steps/*.sh
+          echo "install.sh and every composite step passed shellcheck."

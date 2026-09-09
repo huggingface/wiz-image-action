@@ -64,36 +64,11 @@ runs:
           exit 1
         fi
 
-    # Installed at a path that both actions in this repository calculate the same way, so
-    # the register action finds this binary and does not download it again. The runner
-    # empties RUNNER_TEMP between jobs, so this is one download per job.
+    # Shared with the register action. GITHUB_ACTION_PATH points at this action's own
+    # subdirectory, and the runner unpacks the whole repository, so `../` reaches the root.
     - name: Install the Wiz CLI
       shell: bash
-      run: |
-        set -euo pipefail
-        dir="${RUNNER_TEMP}/wiz-image-action"
-        cli="${dir}/wizcli"
-
-        if [ -x "$cli" ]; then
-          echo "The Wiz CLI is already installed at ${cli}."
-          exit 0
-        fi
-
-        os=$(uname -s | tr '[:upper:]' '[:lower:]')
-        case "$(uname -m)" in
-          x86_64 | amd64) arch=amd64 ;;
-          aarch64 | arm64) arch=arm64 ;;
-          *)
-            echo "::error title=Wiz CLI::The architecture $(uname -m) is not supported."
-            exit 1
-            ;;
-        esac
-
-        mkdir -p "$dir"
-        # The binary is around 270 MiB, so resume rather than start again after a drop.
-        curl -sSfL --retry 3 --retry-all-errors -C - -o "$cli" \
-          "https://downloads.wiz.io/v1/wizcli/latest/wizcli-${os}-${arch}"
-        chmod +x "$cli"
+      run: "${GITHUB_ACTION_PATH}/../install.sh"
 
     # Exit code 4 means the image hit a policy whose CLI enforcement is BLOCK. That
     # enforcement is a setting on the policy in Wiz, so "policy" keeps the decision on the
