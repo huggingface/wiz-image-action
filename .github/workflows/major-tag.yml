@@ -1,8 +1,7 @@
 name: Move the major tag
 
-# Consumers pin `@v1`, so that tag has to follow every release. The equivalent workflow in
-# huggingface/helm-publish-action failed on a read-only token for two releases, which is why
-# `contents: write` is declared here rather than left to the repository default.
+# Consumers pin `@v1`, so that tag has to follow every release. `contents: write` is
+# declared because the default token is read-only and cannot push a tag.
 on:
   release:
     types: [published]

@@ -90,7 +90,7 @@ You can leave `digest` empty only when `docker push` sent the local image to the
 
 The Wiz CLI stops with exit code 4 when the image hits a policy whose CLI enforcement is `BLOCK`. That enforcement is a setting on the policy in Wiz, not in this action. So:
 
-- `enforcement: policy` — the default. The step fails if, and only if, Wiz says the policy blocks the image. Change your mind in Wiz, not in 60 workflows.
+- `enforcement: policy` — the default. The step fails if, and only if, Wiz says the policy blocks the image. Change the decision in Wiz, not in every workflow that calls this action.
 - `enforcement: audit` — the step prints a warning and continues. Use this while you onboard a repository whose image does not pass yet.
 
 Any other non-zero exit code is a failure of the CLI itself. The step always fails then, whatever `enforcement` says.
