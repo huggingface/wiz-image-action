@@ -26,9 +26,11 @@ jobs:
 
       # Derives the next version from the conventional-commit messages and creates the tag
       # and the GitHub release. It outputs an empty tag when there is nothing to release.
+      # Pinned to a commit rather than a moving tag: this repository asks its own callers to
+      # pin, and Dependabot cannot update a `@latest` reference.
       - name: Release
         id: release
-        uses: huggingface/semver-release-action@latest
+        uses: huggingface/semver-release-action@1a164868d29fb12acd39d70e8e47326db9d78ad2 # v1.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -44,12 +46,12 @@ jobs:
 
           # Accept v1.2.3 and 1.2.3, and refuse anything else, so a pre-release never moves
           # a tag that callers depend on.
-          if ! printf '%s' "$TAG" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+          if [[ ! "$TAG" =~ ^v?([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
             echo "::notice::${TAG} is not a plain semver release. The major tag stays where it is."
             exit 0
           fi
 
-          major="v$(printf '%s' "$TAG" | sed -E 's/^v?([0-9]+)\..*/\1/')"
+          major="v${BASH_REMATCH[1]}"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

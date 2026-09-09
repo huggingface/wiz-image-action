@@ -29,19 +29,18 @@ inputs:
     required: false
     default: 'policy'
   reportPath:
-    description: 'File to write the JSON scan report to. The default is a file in the runner temporary directory.'
+    description: 'File to write the JSON scan report to. The default is a file in the runner temporary directory, which is outside the workspace.'
     required: false
     default: ''
   projects:
     description: 'Wiz project IDs or slugs to scope the scan to, separated by commas. Leave this empty to use the projects of the service account.'
     required: false
     default: ''
-  cliVersion:
-    description: 'Version of the Wiz CLI to download. Wiz serves only "latest" today.'
-    required: false
-    default: 'latest'
 
 outputs:
+  image:
+    description: 'The image reference that was scanned. Pass it to the register action, which finds the scan by this exact value.'
+    value: ${{ inputs.image }}
   verdict:
     description: 'The result of the scan. It is "passed" if the image satisfied every applied policy, or "failed" if a policy blocked the image.'
     value: ${{ steps.scan.outputs.verdict }}
@@ -52,12 +51,24 @@ outputs:
 runs:
   using: composite
   steps:
-    # Installed at a path that both actions in this repository calculate the same way,
-    # so a later step finds the binary and does not download it again.
-    - name: Install the Wiz CLI
+    # Checked before the install, so a typo fails in a second instead of after a large
+    # download. Composite actions cannot declare an enum, so this has to be a runtime test.
+    - name: Check the enforcement value
       shell: bash
       env:
-        CLI_VERSION: ${{ inputs.cliVersion }}
+        ENFORCEMENT: ${{ inputs.enforcement }}
+      run: |
+        set -euo pipefail
+        if [ "$ENFORCEMENT" != "policy" ] && [ "$ENFORCEMENT" != "audit" ]; then
+          echo "::error title=Wiz scan::enforcement must be \"policy\" or \"audit\", not \"${ENFORCEMENT}\"."
+          exit 1
+        fi
+
+    # Installed at a path that both actions in this repository calculate the same way, so
+    # the register action finds this binary and does not download it again. The runner
+    # empties RUNNER_TEMP between jobs, so this is one download per job.
+    - name: Install the Wiz CLI
+      shell: bash
       run: |
         set -euo pipefail
         dir="${RUNNER_TEMP}/wiz-image-action"
@@ -79,7 +90,9 @@ runs:
         esac
 
         mkdir -p "$dir"
-        curl -sSfLo "$cli" "https://downloads.wiz.io/v1/wizcli/${CLI_VERSION}/wizcli-${os}-${arch}"
+        # The binary is around 270 MiB, so resume rather than start again after a drop.
+        curl -sSfL --retry 3 --retry-all-errors -C - -o "$cli" \
+          "https://downloads.wiz.io/v1/wizcli/latest/wizcli-${os}-${arch}"
         chmod +x "$cli"
 
     # Exit code 4 means the image hit a policy whose CLI enforcement is BLOCK. That
@@ -101,16 +114,8 @@ runs:
       run: |
         set -euo pipefail
 
-        if [ "$ENFORCEMENT" != "policy" ] && [ "$ENFORCEMENT" != "audit" ]; then
-          echo "::error title=Wiz scan::enforcement must be \"policy\" or \"audit\", not \"${ENFORCEMENT}\"."
-          exit 1
-        fi
-
         cli="${RUNNER_TEMP}/wiz-image-action/wizcli"
-        report="$REPORT_PATH"
-        if [ -z "$report" ]; then
-          report="${RUNNER_TEMP}/wiz-image-action/scan.json"
-        fi
+        report="${REPORT_PATH:-${RUNNER_TEMP}/wiz-image-action/scan.json}"
         mkdir -p "$(dirname "$report")"
 
         args=(scan container-image "$IMAGE" --no-color --no-style --json-output-file "$report")
@@ -127,17 +132,19 @@ runs:
         code=0
         "$cli" "${args[@]}" || code=$?
 
-        verdict=failed
+        fail=0
         case "$code" in
           0)
             verdict=passed
             echo "::notice title=Wiz scan::${IMAGE} passed every applied policy."
             ;;
           4)
+            verdict=failed
             if [ "$ENFORCEMENT" = "audit" ]; then
               echo "::warning title=Wiz scan::${IMAGE} failed a Wiz policy. The step continues because enforcement is set to audit."
             else
               echo "::error title=Wiz scan::${IMAGE} failed a Wiz policy."
+              fail=4
             fi
             ;;
           *)
@@ -146,9 +153,11 @@ runs:
             ;;
         esac
 
-        echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
-        echo "report=${report}" >> "$GITHUB_OUTPUT"
+        # The outputs are written before the exit, so a blocked image still gives the
+        # caller its verdict and its report.
+        {
+          echo "verdict=${verdict}"
+          echo "report=${report}"
+        } >> "$GITHUB_OUTPUT"
 
-        if [ "$verdict" = "failed" ] && [ "$ENFORCEMENT" = "policy" ]; then
-          exit 4
-        fi
+        exit "$fail"

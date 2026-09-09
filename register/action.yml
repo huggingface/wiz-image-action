@@ -8,7 +8,7 @@ branding:
 
 inputs:
   image:
-    description: 'Image reference to register. Give the same value that you gave to the scan action, because the Wiz CLI finds the scan by this reference.'
+    description: 'Image reference to register. Give the same value that you gave to the scan action, because the Wiz CLI finds the scan by this reference. The scan action publishes it as its "image" output.'
     required: true
   digest:
     description: 'Digest of the image in the registry, for example the "digest" output of docker/build-push-action. Give this value whenever the local image has no digest of its own, which is the case for an image that buildx pushed and for an image loaded from a .tar file.'
@@ -24,10 +24,6 @@ inputs:
     description: 'Wiz project IDs or slugs to scope the registration to, separated by commas. Leave this empty to use the projects of the service account.'
     required: false
     default: ''
-  cliVersion:
-    description: 'Version of the Wiz CLI to download. Wiz serves only "latest" today.'
-    required: false
-    default: 'latest'
 
 runs:
   using: composite
@@ -36,8 +32,6 @@ runs:
     # already downloaded and only downloads it when this action is used on its own.
     - name: Install the Wiz CLI
       shell: bash
-      env:
-        CLI_VERSION: ${{ inputs.cliVersion }}
       run: |
         set -euo pipefail
         dir="${RUNNER_TEMP}/wiz-image-action"
@@ -59,8 +53,44 @@ runs:
         esac
 
         mkdir -p "$dir"
-        curl -sSfLo "$cli" "https://downloads.wiz.io/v1/wizcli/${CLI_VERSION}/wizcli-${os}-${arch}"
+        # The binary is around 270 MiB, so resume rather than start again after a drop.
+        curl -sSfL --retry 3 --retry-all-errors -C - -o "$cli" \
+          "https://downloads.wiz.io/v1/wizcli/latest/wizcli-${os}-${arch}"
         chmod +x "$cli"
+
+    # Without a digest there is nothing to register, and the symptom of getting this wrong
+    # appears much later, as an admission verdict on a cluster. So it fails here instead.
+    - name: Check that a digest is available
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+      run: |
+        set -euo pipefail
+
+        if [ -n "$DIGEST" ]; then
+          exit 0
+        fi
+
+        advice='set the digest input to the "digest" output of your push step'
+
+        case "$IMAGE" in
+          *.tar | *.tar.gz | *.tgz)
+            echo "::error title=Wiz register::An exported image carries no digest, so ${IMAGE} needs one. Please ${advice}."
+            exit 1
+            ;;
+        esac
+
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "::warning title=Wiz register::docker is not available, so the digest of ${IMAGE} could not be checked. If the registration fails, ${advice}."
+          exit 0
+        fi
+
+        count=$(docker image inspect --format '{{len .RepoDigests}}' "$IMAGE" 2>/dev/null || echo 0)
+        if [ "$count" = "0" ]; then
+          echo "::error title=Wiz register::The local image ${IMAGE} has no digest of its own, which is normal for an image that buildx pushed. Please ${advice}."
+          exit 1
+        fi
 
     # The Wiz CLI reads the scan from state on this runner, keyed on the image reference.
     # That is why this step belongs in the same job as the scan and cannot be a separate
