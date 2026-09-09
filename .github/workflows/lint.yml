@@ -3,8 +3,10 @@ name: Lint
 # These actions are shell inside YAML, and a public action has no other safety net here.
 on:
   pull_request:
+    paths: ['.github/workflows/**', '*/action.yml']
   push:
     branches: [main]
+    paths: ['.github/workflows/**', '*/action.yml']
 
 permissions:
   contents: read
@@ -15,10 +17,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Pinned release tarball rather than the install script from `main`, so this does not
+      # execute a mutable remote script to lint a repository that asks its callers to pin.
       - name: Lint the workflows with actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
         run: |
           set -euo pipefail
-          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          curl -sSfL --retry 3 --retry-all-errors \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar xz actionlint
           ./actionlint -color
 
       # actionlint reads workflows only, so the shell in the two composite actions needs its
