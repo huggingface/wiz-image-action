@@ -15,7 +15,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Pinned release tarball rather than the install script from `main`, so this does not
       # execute a mutable remote script to lint a repository that asks its callers to pin.
