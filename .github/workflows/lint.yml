@@ -1,0 +1,48 @@
+name: Lint
+
+# These actions are shell inside YAML, and a public action has no other safety net here.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Lint the workflows with actionlint
+        run: |
+          set -euo pipefail
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+      # actionlint reads workflows only, so the shell in the two composite actions needs its
+      # own pass. Extract each `run:` block and give it to shellcheck.
+      - name: Shellcheck the composite action steps
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/steps"
+
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import yaml
+
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "steps"
+          for manifest in ("scan/action.yml", "register/action.yml"):
+              action = yaml.safe_load(open(manifest))
+              for index, step in enumerate(action["runs"]["steps"]):
+                  if "run" not in step:
+                      continue
+                  name = f"{manifest.split('/')[0]}-{index}.sh"
+                  (out / name).write_text("#!/usr/bin/env bash\n" + step["run"])
+                  print(f"wrote {name} for step {step.get('name', index)!r}")
+          PY
+
+          shellcheck --shell=bash --severity=warning "${RUNNER_TEMP}"/steps/*.sh
+          echo "Every composite step passed shellcheck."

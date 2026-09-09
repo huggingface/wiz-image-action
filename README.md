@@ -1,2 +1,110 @@
-# wiz-image-action
-GitHub Actions to scan a container image with the Wiz CLI and register its digest with Wiz image trust
+# Wiz Image Action
+
+Two GitHub Actions that put the [Wiz CLI](https://docs.wiz.io/docs/wiz-cli-overview) into a container image build. One scans the image before you push it. The other binds the scan to the digest in the registry, which adds the image to the Wiz trusted image database.
+
+Wiz publishes no GitHub Action of its own. These actions wrap the documented commands, and they add the two things a pipeline needs: a clear result when a policy blocks an image, and a digest that the Wiz admission controller can find.
+
+| Action | When to run it |
+|---|---|
+| `huggingface/wiz-image-action/scan@v1` | After the build, **before** the push |
+| `huggingface/wiz-image-action/register@v1` | After the push, in the **same job** |
+
+## Usage
+
+```yaml
+      - name: Build the image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true            # the Wiz CLI reads the local image store
+          tags: ${{ env.IMAGE }}
+
+      - name: Scan the image with Wiz
+        uses: huggingface/wiz-image-action/scan@v1
+        with:
+          image: ${{ env.IMAGE }}
+          clientId: ${{ vars.WIZ_CLIENT_ID }}
+          clientSecret: ${{ secrets.WIZ_CLIENT_SECRET }}
+          dockerfile: Dockerfile
+
+      - name: Push the image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}
+
+      - name: Register the image with Wiz
+        uses: huggingface/wiz-image-action/register@v1
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ steps.push.outputs.digest }}
+          clientId: ${{ vars.WIZ_CLIENT_ID }}
+          clientSecret: ${{ secrets.WIZ_CLIENT_SECRET }}
+```
+
+## Two constraints you must respect
+
+**The Wiz CLI never pulls an image.** It reads the local image store. If the image is not there, the scan stops with `unknown image [<ref>]`. Build with `load: true`, or pull the image before you scan it. This is also why the build and the push are two steps: Wiz recommends that you scan after the build but before the push, to keep unscanned images out of your registry.
+
+**The register action must run in the same job as the scan.** The Wiz CLI keeps the scan in state on the runner, and it finds that scan by the image reference. A separate job gets a different runner, and the scan is not there. For the same reason, these are composite actions and not a reusable workflow.
+
+## Inputs
+
+### `scan`
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `image` | yes | | Image reference, with its tag or digest. It must exist locally. A path to a `.tar`, `.tar.gz` or `.tgz` file also works. |
+| `clientId` | yes | | Client ID of the Wiz service account. |
+| `clientSecret` | yes | | Client secret of the Wiz service account. |
+| `policies` | no | *(tenant default)* | Wiz policy names to apply, separated by commas. |
+| `dockerfile` | no | | Path to the Dockerfile. Wiz keeps it as metadata and uses it to correlate the image with its source code. |
+| `enforcement` | no | `policy` | `policy` uses the exit code of the Wiz CLI, so your Wiz policy decides. `audit` prints a warning and continues. |
+| `reportPath` | no | *(runner temp)* | File to write the JSON scan report to. |
+| `projects` | no | *(service account)* | Wiz project IDs or slugs, separated by commas. |
+| `cliVersion` | no | `latest` | Version of the Wiz CLI to download. |
+
+Outputs: `verdict` is `passed` or `failed`. `report` is the path to the JSON report.
+
+### `register`
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `image` | yes | | The same reference that you gave to `scan`. |
+| `digest` | no | | Digest of the image in the registry. Give this value when the local image has no digest of its own. |
+| `clientId` | yes | | Client ID of the Wiz service account. |
+| `clientSecret` | yes | | Client secret of the Wiz service account. |
+| `projects` | no | *(service account)* | Wiz project IDs or slugs, separated by commas. |
+| `cliVersion` | no | `latest` | Version of the Wiz CLI to download. |
+
+## When to give `digest`
+
+Give it whenever the image in the local store has no digest of its own. An image that `buildx` pushed is the common case, because `buildx` pushes from its own cache and leaves no digest on the local image. An image exported to a `.tar` file is the other case. Take the value from the `digest` output of `docker/build-push-action`.
+
+You can leave `digest` empty only when `docker push` sent the local image to the registry, because that push writes the digest back onto the local image.
+
+## Enforcement
+
+The Wiz CLI stops with exit code 4 when the image hits a policy whose CLI enforcement is `BLOCK`. That enforcement is a setting on the policy in Wiz, not in this action. So:
+
+- `enforcement: policy` — the default. The step fails if, and only if, Wiz says the policy blocks the image. Change your mind in Wiz, not in 60 workflows.
+- `enforcement: audit` — the step prints a warning and continues. Use this while you onboard a repository whose image does not pass yet.
+
+Any other non-zero exit code is a failure of the CLI itself. The step always fails then, whatever `enforcement` says.
+
+## Multi-architecture images
+
+A manifest list has a digest of its own, and it is different from the digest of each architecture. Kubernetes resolves the manifest list. So a build that produces one manifest list from several per-architecture images must decide which digest to register. Wiz does not document this case. Test it against a real admission verdict before you rely on it.
+
+## Service account
+
+Create a Wiz CLI deployment, which gives you a service account of type `CLI` and its two values. In the Wiz portal, use **Connect to Wiz**, then **CI/CD Platforms**, then **GitHub**. Do not use the general **New Service Account** form, because it does not offer the `CLI` type.
+
+Store the client ID as a variable and the client secret as a secret. Organization level works, and it saves you from repeating the setup in every repository.
+
+## License
+
+Apache-2.0.

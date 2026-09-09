@@ -1,0 +1,90 @@
+name: 'Wiz Image Register'
+description: 'Bind a Wiz CLI scan to the digest that the registry now holds, which adds the image to the Wiz trusted image database. Run this step after you push the image, in the same job as the scan.'
+author: 'Hugging Face'
+
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  image:
+    description: 'Image reference to register. Give the same value that you gave to the scan action, because the Wiz CLI finds the scan by this reference.'
+    required: true
+  digest:
+    description: 'Digest of the image in the registry, for example the "digest" output of docker/build-push-action. Give this value whenever the local image has no digest of its own, which is the case for an image that buildx pushed and for an image loaded from a .tar file.'
+    required: false
+    default: ''
+  clientId:
+    description: 'Client ID of the Wiz service account.'
+    required: true
+  clientSecret:
+    description: 'Client secret of the Wiz service account.'
+    required: true
+  projects:
+    description: 'Wiz project IDs or slugs to scope the registration to, separated by commas. Leave this empty to use the projects of the service account.'
+    required: false
+    default: ''
+  cliVersion:
+    description: 'Version of the Wiz CLI to download. Wiz serves only "latest" today.'
+    required: false
+    default: 'latest'
+
+runs:
+  using: composite
+  steps:
+    # The same path that the scan action uses, so this step reuses the binary that the scan
+    # already downloaded and only downloads it when this action is used on its own.
+    - name: Install the Wiz CLI
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cliVersion }}
+      run: |
+        set -euo pipefail
+        dir="${RUNNER_TEMP}/wiz-image-action"
+        cli="${dir}/wizcli"
+
+        if [ -x "$cli" ]; then
+          echo "The Wiz CLI is already installed at ${cli}."
+          exit 0
+        fi
+
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        case "$(uname -m)" in
+          x86_64 | amd64) arch=amd64 ;;
+          aarch64 | arm64) arch=arm64 ;;
+          *)
+            echo "::error title=Wiz CLI::The architecture $(uname -m) is not supported."
+            exit 1
+            ;;
+        esac
+
+        mkdir -p "$dir"
+        curl -sSfLo "$cli" "https://downloads.wiz.io/v1/wizcli/${CLI_VERSION}/wizcli-${os}-${arch}"
+        chmod +x "$cli"
+
+    # The Wiz CLI reads the scan from state on this runner, keyed on the image reference.
+    # That is why this step belongs in the same job as the scan and cannot be a separate
+    # job or a reusable workflow.
+    - name: Register the digest
+      shell: bash
+      env:
+        WIZ_CLIENT_ID: ${{ inputs.clientId }}
+        WIZ_CLIENT_SECRET: ${{ inputs.clientSecret }}
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+        PROJECTS: ${{ inputs.projects }}
+      run: |
+        set -euo pipefail
+
+        cli="${RUNNER_TEMP}/wiz-image-action/wizcli"
+
+        args=(tag "$IMAGE" --no-color --no-style)
+        if [ -n "$DIGEST" ]; then
+          args+=(--digest "$DIGEST")
+        fi
+        if [ -n "$PROJECTS" ]; then
+          args+=(--projects "$PROJECTS")
+        fi
+
+        "$cli" "${args[@]}"
+        echo "::notice title=Wiz register::${IMAGE} is registered in the Wiz trusted image database."

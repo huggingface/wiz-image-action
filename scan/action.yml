@@ -1,0 +1,154 @@
+name: 'Wiz Image Scan'
+description: 'Scan a container image with the Wiz CLI. The image must already be in the runner local image store, because the Wiz CLI never pulls it. Run this step before you push the image.'
+author: 'Hugging Face'
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  image:
+    description: 'Image reference to scan, with its tag or digest. It must exist in the local image store, or be the path to a .tar, .tar.gz or .tgz file.'
+    required: true
+  clientId:
+    description: 'Client ID of the Wiz service account.'
+    required: true
+  clientSecret:
+    description: 'Client secret of the Wiz service account.'
+    required: true
+  policies:
+    description: 'Wiz policy names to apply, separated by commas. Leave this empty to apply the policies that your Wiz tenant applies by default.'
+    required: false
+    default: ''
+  dockerfile:
+    description: 'Path to the Dockerfile that built the image. Wiz keeps it as scan metadata and uses it to correlate the image with its source code.'
+    required: false
+    default: ''
+  enforcement:
+    description: 'What to do if the image fails a Wiz policy. Set "policy" to use the exit code of the Wiz CLI, which lets your Wiz policy decide. Set "audit" to print a warning and continue.'
+    required: false
+    default: 'policy'
+  reportPath:
+    description: 'File to write the JSON scan report to. The default is a file in the runner temporary directory.'
+    required: false
+    default: ''
+  projects:
+    description: 'Wiz project IDs or slugs to scope the scan to, separated by commas. Leave this empty to use the projects of the service account.'
+    required: false
+    default: ''
+  cliVersion:
+    description: 'Version of the Wiz CLI to download. Wiz serves only "latest" today.'
+    required: false
+    default: 'latest'
+
+outputs:
+  verdict:
+    description: 'The result of the scan. It is "passed" if the image satisfied every applied policy, or "failed" if a policy blocked the image.'
+    value: ${{ steps.scan.outputs.verdict }}
+  report:
+    description: 'Path to the JSON scan report.'
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    # Installed at a path that both actions in this repository calculate the same way,
+    # so a later step finds the binary and does not download it again.
+    - name: Install the Wiz CLI
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cliVersion }}
+      run: |
+        set -euo pipefail
+        dir="${RUNNER_TEMP}/wiz-image-action"
+        cli="${dir}/wizcli"
+
+        if [ -x "$cli" ]; then
+          echo "The Wiz CLI is already installed at ${cli}."
+          exit 0
+        fi
+
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        case "$(uname -m)" in
+          x86_64 | amd64) arch=amd64 ;;
+          aarch64 | arm64) arch=arm64 ;;
+          *)
+            echo "::error title=Wiz CLI::The architecture $(uname -m) is not supported."
+            exit 1
+            ;;
+        esac
+
+        mkdir -p "$dir"
+        curl -sSfLo "$cli" "https://downloads.wiz.io/v1/wizcli/${CLI_VERSION}/wizcli-${os}-${arch}"
+        chmod +x "$cli"
+
+    # Exit code 4 means the image hit a policy whose CLI enforcement is BLOCK. That
+    # enforcement is a setting on the policy in Wiz, so "policy" keeps the decision on the
+    # Wiz side. Every other non-zero code is a failure of the CLI itself and always fails
+    # the step.
+    - name: Scan the image
+      id: scan
+      shell: bash
+      env:
+        WIZ_CLIENT_ID: ${{ inputs.clientId }}
+        WIZ_CLIENT_SECRET: ${{ inputs.clientSecret }}
+        IMAGE: ${{ inputs.image }}
+        POLICIES: ${{ inputs.policies }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        ENFORCEMENT: ${{ inputs.enforcement }}
+        REPORT_PATH: ${{ inputs.reportPath }}
+        PROJECTS: ${{ inputs.projects }}
+      run: |
+        set -euo pipefail
+
+        if [ "$ENFORCEMENT" != "policy" ] && [ "$ENFORCEMENT" != "audit" ]; then
+          echo "::error title=Wiz scan::enforcement must be \"policy\" or \"audit\", not \"${ENFORCEMENT}\"."
+          exit 1
+        fi
+
+        cli="${RUNNER_TEMP}/wiz-image-action/wizcli"
+        report="$REPORT_PATH"
+        if [ -z "$report" ]; then
+          report="${RUNNER_TEMP}/wiz-image-action/scan.json"
+        fi
+        mkdir -p "$(dirname "$report")"
+
+        args=(scan container-image "$IMAGE" --no-color --no-style --json-output-file "$report")
+        if [ -n "$POLICIES" ]; then
+          args+=(--policies "$POLICIES")
+        fi
+        if [ -n "$DOCKERFILE" ]; then
+          args+=(--dockerfile "$DOCKERFILE")
+        fi
+        if [ -n "$PROJECTS" ]; then
+          args+=(--projects "$PROJECTS")
+        fi
+
+        code=0
+        "$cli" "${args[@]}" || code=$?
+
+        verdict=failed
+        case "$code" in
+          0)
+            verdict=passed
+            echo "::notice title=Wiz scan::${IMAGE} passed every applied policy."
+            ;;
+          4)
+            if [ "$ENFORCEMENT" = "audit" ]; then
+              echo "::warning title=Wiz scan::${IMAGE} failed a Wiz policy. The step continues because enforcement is set to audit."
+            else
+              echo "::error title=Wiz scan::${IMAGE} failed a Wiz policy."
+            fi
+            ;;
+          *)
+            echo "::error title=Wiz scan::The Wiz CLI stopped with exit code ${code}."
+            exit "$code"
+            ;;
+        esac
+
+        echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+        echo "report=${report}" >> "$GITHUB_OUTPUT"
+
+        if [ "$verdict" = "failed" ] && [ "$ENFORCEMENT" = "policy" ]; then
+          exit 4
+        fi
