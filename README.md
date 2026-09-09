@@ -105,6 +105,23 @@ Create a Wiz CLI deployment, which gives you a service account of type `CLI` and
 
 Store the client ID as a variable and the client secret as a secret. Organization level works, and it saves you from repeating the setup in every repository.
 
+## Releasing
+
+A merge to `main` releases. `semantic-release` reads the conventional-commit messages, works out the next version, and creates the tag and the GitHub release. The same job then moves the `v1` tag onto the new commit.
+
+Merges are squashed, so **the pull request title is the message that decides the version**:
+
+| Title starts with | Result |
+|---|---|
+| `fix:` | patch, and `v1` follows |
+| `feat:` | minor, and `v1` follows |
+| `feat!:`, or a `BREAKING CHANGE:` footer | major. This creates `v2` and leaves `v1` where it is. |
+| `chore:`, `ci:`, `docs:`, `refactor:` | no release |
+
+A patch or a minor release reaches every caller pinned to `@v1` on their next workflow run. Mark a breaking change as breaking, or you ship it to all of them.
+
+A pre-release version never moves the major tag.
+
 ## License
 
 Apache-2.0.
