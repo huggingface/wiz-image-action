@@ -17,7 +17,7 @@ inputs:
     description: 'Client secret of the Wiz service account.'
     required: true
   policies:
-    description: 'Wiz policy names to apply, separated by commas. Leave this empty to apply the policies that your Wiz tenant applies by default.'
+    description: 'Wiz policy names to apply, separated by commas. Naming any policy restricts the scan to the ones you name, so passing only a vulnerability policy stops the secrets, sensitive data and malware checks from running. Leave this empty to apply every policy your Wiz tenant applies by default, which is what most callers want.'
     required: false
     default: ''
   dockerfile:

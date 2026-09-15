@@ -61,7 +61,7 @@ Wiz publishes no GitHub Action of its own. These actions wrap the documented com
 | `image` | yes | | Image reference, with its tag or digest. It must exist locally. A path to a `.tar`, `.tar.gz` or `.tgz` file also works. |
 | `clientId` | yes | | Client ID of the Wiz service account. |
 | `clientSecret` | yes | | Client secret of the Wiz service account. |
-| `policies` | no | *(tenant default)* | Wiz policy names to apply, separated by commas. |
+| `policies` | no | *(tenant default)* | Wiz policy names to apply, separated by commas. Naming one **restricts** the scan to it: leave it empty to keep the secrets, sensitive data and malware checks your tenant applies by default. |
 | `dockerfile` | no | | Path to the Dockerfile. Wiz keeps it as metadata and uses it to correlate the image with its source code. |
 | `enforcement` | no | `policy` | `policy` uses the exit code of the Wiz CLI, so your Wiz policy decides. `audit` prints a warning and continues. |
 | `reportPath` | no | *(runner temp)* | File to write the JSON scan report to. |
