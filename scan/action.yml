@@ -17,7 +17,7 @@ inputs:
     description: 'Client secret of the Wiz service account.'
     required: true
   policies:
-    description: 'Wiz policy names to apply, separated by commas. Leave this empty to apply the policies that your Wiz tenant applies by default.'
+    description: 'Wiz policy names to apply, separated by commas. Naming any policy restricts the scan to the ones you name, so passing only a vulnerability policy stops the secrets, sensitive data and malware checks from running. Leave this empty to apply every policy your Wiz tenant applies by default, which is what most callers want.'
     required: false
     default: ''
   dockerfile:
@@ -127,6 +127,14 @@ runs:
             exit "$code"
             ;;
         esac
+
+        # Same pattern as install.sh: the runner unzips the whole repository, so a
+        # sibling script is reachable from either action. `|| true` because a missing or
+        # truncated report must not turn a passing scan into a failed step.
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          python3 "${GITHUB_ACTION_PATH}/../summary.py" "$report" "$IMAGE" "$verdict" \
+            >> "$GITHUB_STEP_SUMMARY" || true
+        fi
 
         # The outputs are written before the exit, so a blocked image still gives the
         # caller its verdict and its report.

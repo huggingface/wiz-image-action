@@ -3,10 +3,10 @@ name: Lint
 # These actions are shell inside YAML, and a public action has no other safety net here.
 on:
   pull_request:
-    paths: ['.github/workflows/**', '*/action.yml', 'install.sh']
+    paths: ['.github/workflows/**', '*/action.yml', '*.sh', '*.py']
   push:
     branches: [main]
-    paths: ['.github/workflows/**', '*/action.yml', 'install.sh']
+    paths: ['.github/workflows/**', '*/action.yml', '*.sh', '*.py']
 
 permissions:
   contents: read
@@ -56,3 +56,32 @@ jobs:
 
           shellcheck --shell=bash --severity=warning install.sh "${RUNNER_TEMP}"/steps/*.sh
           echo "install.sh and every composite step passed shellcheck."
+
+      # summary.py renders whatever the Wiz CLI wrote. Running it against a recorded
+      # report is the only way to know the markdown still comes out, since a broken
+      # summary is swallowed by the `|| true` that keeps it from failing a scan.
+      - name: Check summary.py
+        run: |
+          set -euo pipefail
+          python3 -m py_compile summary.py
+
+          cat > "${RUNNER_TEMP}/report.json" <<'JSON'
+          {
+            "scanOriginResource": {"digest": "sha256:0000"},
+            "policies": [{"name": "Default vulnerabilities policy"}],
+            "reportUrl": "https://example.invalid/report",
+            "result": {"analytics": {"vulnerabilities": {"criticalCount": 7, "totalCount": 7, "unfixedCount": 2}}}
+          }
+          JSON
+          out=$(python3 summary.py "${RUNNER_TEMP}/report.json" repo/image:tag failed)
+          for want in '❌' 'repo/image:tag' 'sha256:0000' '| Vulnerabilities | 7 |' \
+                      '2 of the vulnerabilities have no fix available.' \
+                      'Default vulnerabilities policy' 'https://example.invalid/report'; do
+            grep -qF "$want" <<<"$out" || { echo "::error::summary.py lost: $want"; echo "$out"; exit 1; }
+          done
+
+          echo '{}' > "${RUNNER_TEMP}/empty.json"
+          python3 summary.py "${RUNNER_TEMP}/empty.json" repo/image:tag passed \
+            | grep -qF 'No vulnerabilities, secrets or malware found.'
+
+          echo "summary.py renders both shapes."
