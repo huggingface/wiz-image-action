@@ -128,6 +128,14 @@ runs:
             ;;
         esac
 
+        # Same pattern as install.sh: the runner unzips the whole repository, so a
+        # sibling script is reachable from either action. `|| true` because a missing or
+        # truncated report must not turn a passing scan into a failed step.
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          python3 "${GITHUB_ACTION_PATH}/../summary.py" "$report" "$IMAGE" "$verdict" \
+            >> "$GITHUB_STEP_SUMMARY" || true
+        fi
+
         # The outputs are written before the exit, so a blocked image still gives the
         # caller its verdict and its report.
         {
