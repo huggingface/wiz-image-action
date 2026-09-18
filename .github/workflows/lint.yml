@@ -31,8 +31,8 @@ jobs:
           # for having checked nothing.
           ./actionlint -color -verbose
 
-      # actionlint reads workflows only, so the shell in the two composite actions needs its
-      # own pass. Extract each `run:` block and give it to shellcheck.
+      # actionlint reads workflows only, so the shell in the composite actions needs its own
+      # pass. Extract each `run:` block and give it to shellcheck.
       - name: Shellcheck the composite action steps
         run: |
           set -euo pipefail
@@ -44,7 +44,9 @@ jobs:
           import yaml
 
           out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "steps"
-          for manifest in ("scan/action.yml", "register/action.yml"):
+          # Globbed, so a new action directory is covered without editing this file.
+          for path in sorted(pathlib.Path(".").glob("*/action.yml")):
+              manifest = str(path)
               action = yaml.safe_load(open(manifest))
               for index, step in enumerate(action["runs"]["steps"]):
                   if "run" not in step:

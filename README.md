@@ -1,19 +1,38 @@
 # Wiz Image Action
 
-Two GitHub Actions that put the [Wiz CLI](https://docs.wiz.io/docs/wiz-cli-overview) into a container image build. One scans the image before you push it. The other binds the scan to the digest in the registry, which adds the image to the Wiz trusted image database.
+GitHub Actions that put the [Wiz CLI](https://docs.wiz.io/docs/wiz-cli-overview) into a container image build. They scan the image before you push it, and bind the scan to the digest in the registry, which adds the image to the Wiz trusted image database.
 
 Wiz publishes no GitHub Action of its own. These actions wrap the documented commands, and they add the two things a pipeline needs: a clear result when a policy blocks an image, and a digest that the Wiz admission controller can find.
 
 | Action | When to run it |
 |---|---|
+| `huggingface/wiz-image-action/build-push@v1` | On its own: it builds, scans, pushes and registers |
 | `huggingface/wiz-image-action/scan@v1` | After the build, **before** the push |
 | `huggingface/wiz-image-action/register@v1` | After the push, in the **same job** |
 
 ## Usage
 
+One step builds, scans, pushes and registers:
+
+```yaml
+      - name: Build and push the image
+        uses: huggingface/wiz-image-action/build-push@v1
+        with:
+          image: ${{ env.IMAGE }}
+          context: .
+          file: Dockerfile
+          clientId: ${{ vars.WIZ_CLIENT_ID }}
+          clientSecret: ${{ secrets.WIZ_CLIENT_SECRET }}
+```
+
+The image is pushed only if the scan passes, so a vulnerable image never reaches your
+registry.
+
+Use `scan` and `register` separately when you need to interleave steps, or when
+something other than this action builds the image:
+
 ```yaml
       - name: Build the image
-        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -30,29 +49,52 @@ Wiz publishes no GitHub Action of its own. These actions wrap the documented com
           dockerfile: Dockerfile
 
       - name: Push the image
-        id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ env.IMAGE }}
+        run: docker push "${{ env.IMAGE }}"
 
       - name: Register the image with Wiz
         uses: huggingface/wiz-image-action/register@v1
         with:
           image: ${{ steps.scan.outputs.image }}
-          digest: ${{ steps.push.outputs.digest }}
           clientId: ${{ vars.WIZ_CLIENT_ID }}
           clientSecret: ${{ secrets.WIZ_CLIENT_SECRET }}
 ```
 
-## Two constraints you must respect
+## Three constraints you must respect
 
-**The Wiz CLI never pulls an image.** It reads the local image store. If the image is not there, the scan stops with `unknown image [<ref>]`. Build with `load: true`, or pull the image before you scan it. This is also why the build and the push are two steps: Wiz recommends that you scan after the build but before the push, to keep unscanned images out of your registry.
+**The Wiz CLI never pulls an image.** It reads the local image store. If the image is not there, the scan stops with `unknown image [<ref>]`. Build with `load: true`, or pull the image before you scan it. This is also why the scan sits between the build and the push: Wiz recommends scanning after the build but before the push, to keep unscanned images out of your registry.
+
+**Push the image you scanned, not a rebuild of it.** A second `docker/build-push-action`
+step with `push: true` rebuilds, and on a runner whose daemon keeps its own image store
+that republishes the reference under a new local image id. The Wiz CLI then cannot find
+the scan it recorded a moment earlier, and `register` fails with `image scan id mapping
+not found`. `docker push` publishes the image the scan saw, and skips a rebuild.
 
 **The register action must run in the same job as the scan.** The Wiz CLI keeps the scan in state on the runner, and it finds that scan by the image reference. A separate job gets a different runner, and the scan is not there. For the same reason, these are composite actions and not a reusable workflow.
 
 ## Inputs
+
+### `build-push`
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `image` | yes | | Image reference to build, with its tag. The scan and the registration use this exact value. |
+| `clientId` | yes | | Client ID of the Wiz service account. |
+| `clientSecret` | yes | | Client secret of the Wiz service account. |
+| `context` | no | `.` | Build context. |
+| `file` | no | | Path to the Dockerfile. Also given to Wiz as scan metadata. |
+| `target` | no | | Dockerfile stage to build. |
+| `build-args` | no | | Build arguments, one per line. |
+| `labels` | no | | Image labels, one per line. |
+| `ssh` | no | | SSH agent sockets or keys to expose to the build. |
+| `cache-from` / `cache-to` | no | | Cache sources and destinations, one per line. |
+
+`policies`, `enforcement` and `projects` are passed straight to `scan` — see that table.
+Other `docker/build-push-action` inputs are not forwarded; open an issue if you need one.
+
+Outputs: `digest` is what the registry assigned, `verdict` is `passed` or `failed`, and
+`report` is the path to the JSON report.
+
+It calls `scan@v1` and `register@v1`, whatever ref you pin `build-push` to.
 
 ### `scan`
 
