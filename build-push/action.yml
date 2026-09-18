@@ -1,0 +1,129 @@
+name: 'Wiz Image Build and Push'
+description: 'Build a container image, scan it with the Wiz CLI, push it only if the scan passes, then register the pushed digest. Use the scan and register actions separately if you need to interleave other steps.'
+author: 'Hugging Face'
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  image:
+    description: 'Image reference to build, with its tag. The scan and the registration both use this exact value.'
+    required: true
+  clientId:
+    description: 'Client ID of the Wiz service account.'
+    required: true
+  clientSecret:
+    description: 'Client secret of the Wiz service account.'
+    required: true
+  context:
+    description: 'Build context, as passed to docker/build-push-action.'
+    required: false
+    default: '.'
+  file:
+    description: 'Path to the Dockerfile.'
+    required: false
+    default: ''
+  target:
+    description: 'Dockerfile stage to build.'
+    required: false
+    default: ''
+  build-args:
+    description: 'Build arguments, one per line.'
+    required: false
+    default: ''
+  labels:
+    description: 'Image labels, one per line.'
+    required: false
+    default: ''
+  ssh:
+    description: 'SSH agent sockets or keys to expose to the build.'
+    required: false
+    default: ''
+  cache-from:
+    description: 'Cache sources, one per line.'
+    required: false
+    default: ''
+  cache-to:
+    description: 'Cache destinations, one per line.'
+    required: false
+    default: ''
+  policies:
+    description: 'Wiz policy names to apply, separated by commas. Naming any policy restricts the scan to the ones you name, so passing only a vulnerability policy stops the secrets, sensitive data and malware checks from running. Leave this empty to apply every policy your Wiz tenant applies by default, which is what most callers want.'
+    required: false
+    default: ''
+  enforcement:
+    description: 'What to do if the image fails a Wiz policy. "policy" uses the exit code of the Wiz CLI, so a failing image is never pushed. "audit" reports and continues, which publishes the image anyway.'
+    required: false
+    default: 'policy'
+  projects:
+    description: 'Wiz project IDs or slugs to scope the scan and the registration to, separated by commas.'
+    required: false
+    default: ''
+
+outputs:
+  digest:
+    description: 'Digest the registry assigned to the image.'
+    value: ${{ steps.push.outputs.digest }}
+  verdict:
+    description: 'The result of the scan, "passed" or "failed".'
+    value: ${{ steps.scan.outputs.verdict }}
+  report:
+    description: 'Path to the JSON scan report.'
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    # `load` rather than `push`: the Wiz CLI reads the local image store and never pulls,
+    # and the scan below decides whether this image may be published at all.
+    - name: Build the image
+      uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        target: ${{ inputs.target }}
+        build-args: ${{ inputs.build-args }}
+        labels: ${{ inputs.labels }}
+        ssh: ${{ inputs.ssh }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+        load: true
+        tags: ${{ inputs.image }}
+
+    - name: Scan the image
+      id: scan
+      uses: huggingface/wiz-image-action/scan@v1
+      with:
+        image: ${{ inputs.image }}
+        clientId: ${{ inputs.clientId }}
+        clientSecret: ${{ inputs.clientSecret }}
+        policies: ${{ inputs.policies }}
+        dockerfile: ${{ inputs.file }}
+        enforcement: ${{ inputs.enforcement }}
+        projects: ${{ inputs.projects }}
+
+    # `docker push`, not a second buildx run: a rebuild breaks the link to the scan
+    # (`image scan id mapping not found`). See the README.
+    - name: Push the image
+      id: push
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        set -euo pipefail
+
+        docker push "$IMAGE"
+
+        # The registry assigns this, so it only exists now.
+        digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE" | sed 's/.*@//')
+        echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+    - name: Register the digest
+      uses: huggingface/wiz-image-action/register@v1
+      with:
+        image: ${{ inputs.image }}
+        digest: ${{ steps.push.outputs.digest }}
+        clientId: ${{ inputs.clientId }}
+        clientSecret: ${{ inputs.clientSecret }}
+        projects: ${{ inputs.projects }}
