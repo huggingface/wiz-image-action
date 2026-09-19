@@ -16,6 +16,10 @@ inputs:
   clientSecret:
     description: 'Client secret of the Wiz service account.'
     required: true
+  extraTags:
+    description: 'Further tags to publish, one per line. They must be in the same repository as "image": a tag there is the same manifest, so it carries the digest the registration already covers. A tag in another repository re-uploads every layer and gets its own digest, which nothing would register.'
+    required: false
+    default: ''
   context:
     description: 'Build context, as passed to docker/build-push-action.'
     required: false
@@ -89,7 +93,10 @@ runs:
         cache-from: ${{ inputs.cache-from }}
         cache-to: ${{ inputs.cache-to }}
         load: true
-        tags: ${{ inputs.image }}
+        # Blank lines are dropped by the upstream action, so an empty extraTags is fine.
+        tags: |
+          ${{ inputs.image }}
+          ${{ inputs.extraTags }}
 
     - name: Scan the image
       id: scan
@@ -110,12 +117,16 @@ runs:
       shell: bash
       env:
         IMAGE: ${{ inputs.image }}
+        EXTRA_TAGS: ${{ inputs.extraTags }}
       run: |
         set -euo pipefail
 
-        docker push "$IMAGE"
+        printf '%s\n%s\n' "$IMAGE" "$EXTRA_TAGS" | while IFS= read -r tag; do
+          [ -n "$tag" ] || continue
+          docker push "$tag"
+        done
 
-        # The registry assigns this, so it only exists now.
+        # The registry assigns this, so it only exists now. Every tag shares it.
         digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE" | sed 's/.*@//')
         echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 

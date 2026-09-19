@@ -80,6 +80,7 @@ not found`. `docker push` publishes the image the scan saw, and skips a rebuild.
 | `image` | yes | | Image reference to build, with its tag. The scan and the registration use this exact value. |
 | `clientId` | yes | | Client ID of the Wiz service account. |
 | `clientSecret` | yes | | Client secret of the Wiz service account. |
+| `extraTags` | no | | Further tags to publish, one per line. They must be in the **same repository** as `image`, where they are the same manifest and so carry the digest the registration already covers. |
 | `context` | no | `.` | Build context. |
 | `file` | no | | Path to the Dockerfile. Also given to Wiz as scan metadata. |
 | `target` | no | | Dockerfile stage to build. |
