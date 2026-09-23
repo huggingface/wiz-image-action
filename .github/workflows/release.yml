@@ -6,17 +6,17 @@ on:
 
 # semantic-release needs contents:write for the tag and the release, and
 # issues/pull-requests:write for the comments it leaves on what it released.
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
 
 concurrency:
   group: release
   cancel-in-progress: false
 
+permissions: {}
+
 jobs:
   release:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
